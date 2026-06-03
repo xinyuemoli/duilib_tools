@@ -1,0 +1,28 @@
+# Build output
+bin/
+build/
+
+# IDE
+.vs/
+*.suo
+*.sln.doc states
+*.vcxproj.user
+
+# Debug/Release
+Debug/
+Release/
+RelWithDebInfo/
+MinSizeRel/
+
+# Claude
+.claude/
+
+# Misc
+*.user
+*.pdb
+*.exp
+*.lib
+*.o
+*.obj
+*.exe
+*.dll
