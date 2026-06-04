@@ -24,6 +24,7 @@ extern FN_GetItemAt   g_pfnGetItemAt;
 extern FN_GetParent   g_pfnGetParent;
 extern FN_GetRoot     g_pfnGetRoot;
 extern FN_GetPaintWindow g_pfnGetPaintWindow;
+extern BOOL g_bAccessibleInitialized;
 
 // Safe helper functions
 const wchar_t* DuiLib_GetControlClass(void* pControl);

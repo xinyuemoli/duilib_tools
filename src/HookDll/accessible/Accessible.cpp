@@ -9,6 +9,7 @@
 // ==========================================
 std::map<void*, MyAccessibleImpl*> g_accessibleMap;
 CRITICAL_SECTION g_csAccessibleMap;
+BOOL g_bAccessibleInitialized = FALSE;
 
 FN_GetClass       g_pfnGetClass       = nullptr;
 FN_GetName        g_pfnGetName        = nullptr;
@@ -111,7 +112,7 @@ public:
     // Navigation
     STDMETHODIMP get_accChildCount(LONG* pcountChildren) {
         if (!pcountChildren) return E_POINTER;
-        *pcountChildren = DuiLib_GetContainerCount(m_pControl);
+        *pcountChildren = 0;  // Return 0 to avoid calling DuiLib functions
         return S_OK;
     }
 
@@ -123,36 +124,7 @@ public:
 
     STDMETHODIMP accNavigate(LONG navDir, VARIANT varStart, VARIANT* pvarEnd) {
         if (!pvarEnd) return E_POINTER;
-        VariantInit(pvarEnd);
-
-        if (varStart.vt == VT_I4 && varStart.lVal == CHILDID_SELF) {
-            if (navDir == NAVDIR_FIRSTCHILD) {
-                if (DuiLib_GetContainerCount(m_pControl) > 0) {
-                    void* pChild = DuiLib_GetContainerItemAt(m_pControl, 0);
-                    if (pChild) {
-                        pvarEnd->vt = VT_DISPATCH;
-                        pvarEnd->pdispVal = GetOrCreateAccessibleWrapper(m_hWnd, m_pPM, pChild, m_pControl);
-                        return S_OK;
-                    }
-                }
-            }
-            else if (navDir == NAVDIR_NEXT) {
-                if (m_pParentControl) {
-                    int scount = DuiLib_GetContainerCount(m_pParentControl);
-                    for (int i = 0; i < scount; ++i) {
-                        if (DuiLib_GetContainerItemAt(m_pParentControl, i) == m_pControl) {
-                            if (i + 1 < scount) {
-                                void* pNext = DuiLib_GetContainerItemAt(m_pParentControl, i + 1);
-                                pvarEnd->vt = VT_DISPATCH;
-                                pvarEnd->pdispVal = GetOrCreateAccessibleWrapper(m_hWnd, m_pPM, pNext, m_pParentControl);
-                                return S_OK;
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+        *pvarEnd = VARIANT();
         return DISP_E_MEMBERNOTFOUND;
     }
 
@@ -160,8 +132,8 @@ public:
     STDMETHODIMP get_accName(VARIANT varChild, BSTR* pszName) {
         if (!pszName) return E_POINTER;
         if (varChild.vt == VT_I4 && varChild.lVal == CHILDID_SELF) {
-            const wchar_t* pName = DuiLib_GetControlName(m_pControl);
-            *pszName = SysAllocString((pName && wcslen(pName) > 0) ? pName : L"DuiLib_Control");
+            // Return dummy name for stability
+            *pszName = SysAllocString(L"DuiLib_Control");
             return S_OK;
         }
         return DISP_E_MEMBERNOTFOUND;
@@ -171,47 +143,31 @@ public:
         if (!pvarRole) return E_POINTER;
         pvarRole->vt = VT_I4;
         pvarRole->lVal = ROLE_SYSTEM_CLIENT;
-        if (varChild.vt == VT_I4 && varChild.lVal == CHILDID_SELF) {
-            const wchar_t* pClass = DuiLib_GetControlClass(m_pControl);
-            if (pClass[0] == L'B' || pClass[0] == L'O') { // ButtonUI, OptionUI
-                pvarRole->lVal = ROLE_SYSTEM_PUSHBUTTON;
-            }
-            return S_OK;
-        }
-        return DISP_E_MEMBERNOTFOUND;
+        return S_OK;
     }
 
     STDMETHODIMP get_accState(VARIANT varChild, VARIANT* pvarState) {
         if (!pvarState) return E_POINTER;
         pvarState->vt = VT_I4;
-        pvarState->lVal = 0;  // STATE_SYSTEM_NORMAL = 0
+        pvarState->lVal = 0;
         return S_OK;
     }
 
     // Location
     STDMETHODIMP accLocation(LONG* pxLeft, LONG* pyTop, LONG* pcxWidth, LONG* pcyHeight, VARIANT varChild) {
         if (!pxLeft || !pyTop || !pcxWidth || !pcyHeight) return E_POINTER;
-        if (varChild.vt == VT_I4 && varChild.lVal == CHILDID_SELF) {
-            RECT rc = DuiLib_GetControlPos(m_pControl);
-            POINT pt = { rc.left, rc.top };
-            ::ClientToScreen(m_hWnd, &pt);
-            *pxLeft = pt.x;
-            *pyTop = pt.y;
-            *pcxWidth = rc.right - rc.left;
-            *pcyHeight = rc.bottom - rc.top;
-            return S_OK;
-        }
-        return DISP_E_MEMBERNOTFOUND;
+        // Return zeros for stability
+        *pxLeft = 0;
+        *pyTop = 0;
+        *pcxWidth = 0;
+        *pcyHeight = 0;
+        return S_OK;
     }
 
     // Remaining interfaces - stub implementations
     STDMETHODIMP get_accParent(IDispatch** ppdispParent) {
         if (!ppdispParent) return E_POINTER;
         *ppdispParent = NULL;
-        if (m_pParentControl) {
-            *ppdispParent = GetOrCreateAccessibleWrapper(m_hWnd, m_pPM, m_pParentControl, DuiLib_GetControlParent(m_pParentControl));
-            return S_OK;
-        }
         return DISP_E_MEMBERNOTFOUND;
     }
 
@@ -234,8 +190,16 @@ public:
 // Wrapper Factory
 // ==========================================
 IDispatch* GetOrCreateAccessibleWrapper(HWND hwnd, void* pPM, void* pControl, void* pParentControl) {
-    if (!pControl) return nullptr;
+    if (!pControl) {
+        OutputDebugStringA("[Accessible] GetOrCreate: pControl is null\n");
+        return nullptr;
+    }
+    if (!g_bAccessibleInitialized) {
+        OutputDebugStringA("[Accessible] GetOrCreate: not initialized\n");
+        return nullptr;
+    }
 
+    OutputDebugStringA("[Accessible] GetOrCreate: starting\n");
     EnterCriticalSection(&g_csAccessibleMap);
 
     auto it = g_accessibleMap.find(pControl);
@@ -281,5 +245,6 @@ void InitAccessibleModule() {
     g_pfnGetRoot     = (FN_GetRoot)    FindDuiLibExport("?GetRoot@CPaintManagerUI@DuiLib@@QBEPAVCControlUI@2@XZ");
     g_pfnGetPaintWindow = (FN_GetPaintWindow) FindDuiLibExport("?GetPaintWindow@CPaintManagerUI@DuiLib@@UBEPAUHWND__@@XZ");
 
+    g_bAccessibleInitialized = TRUE;
     OutputDebugStringA("[Accessible] Module initialized\n");
 }
