@@ -1,6 +1,7 @@
 #include "MessageHandler.h"
 #include "../duilib/ModuleFinder.h"
 #include "../common/ThreadEnum.h"
+#include "../accessible/Accessible.h"
 #include "detours/detours.h"
 #include <vector>
 #include <string>
@@ -18,6 +19,26 @@ static PVOID g_pRawOriginMessageHandler = nullptr;
 static BOOL g_bHookInstalled = FALSE;
 
 BOOL CPaintManagerUI_Hook::DetouredMessageHandler(UINT msg, UINT wParam, INT lParam, INT* pResult) {
+    // 【高级通道接入】：有自动化软件扫描该 DuiLib 窗口
+    if (msg == WM_GETOBJECT && lParam == OBJID_CLIENT) {
+        OutputDebugStringA("[Accessible] Intercepted WM_GETOBJECT!\n");
+        if (g_pfnGetRoot && g_pfnGetPaintWindow) {
+            HWND hwnd = g_pfnGetPaintWindow(this);
+            void* pRootControl = g_pfnGetRoot(this);
+            if (pRootControl) {
+                IDispatch* pRootAccessible = GetOrCreateAccessibleWrapper(hwnd, this, pRootControl, nullptr);
+                if (pRootAccessible) {
+                    LRESULT lres = LresultFromObject(IID_IAccessible, wParam, pRootAccessible);
+                    pRootAccessible->Release();
+                    *pResult = lres;
+                    OutputDebugStringA("[Accessible] WM_GETOBJECT handled!\n");
+                    return TRUE;
+                }
+            }
+        }
+    }
+
+    // 普通用户点击流、按钮重绘流
     OutputDebugStringA("[HookDll] call g_originPainterMessageHandle\n");
     BOOL bResult = (this->*g_originPainterMessageHandle)(msg, wParam, lParam, pResult);
     OutputDebugStringA("[HookDll] leave DetouredMessageHandler \n");
@@ -38,6 +59,9 @@ static void FindImportFunctions() {
     } cast;
     cast.raw = pfnRaw;
     g_originPainterMessageHandle = cast.member;
+
+    // 初始化 Accessible 模块
+    InitAccessibleModule();
 }
 
 BOOL InstallMessageHandlerHook() {

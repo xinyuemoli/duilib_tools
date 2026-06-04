@@ -4,6 +4,7 @@ add_library(HookDll SHARED
     common/ThreadEnum.cpp
     duilib/ModuleFinder.cpp
     hooks/MessageHandler.cpp
+    accessible/Accessible.cpp
 )
 
 set_target_properties(HookDll PROPERTIES
