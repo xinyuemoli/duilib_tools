@@ -31,6 +31,7 @@ FN_DuiStringGetData g_pfnDuiStringGetData = nullptr;
 // Actual ABI: GetName(CDuiString* retBuf, CControlUI* this)
 typedef void* (__thiscall* FN_VirtualGetName)(void* pControl, void* pRetBuf);
 static const int VT_GETNAME = 5;
+static const int VT_GETINTERFACE = 8;
 
 // ==========================================
 // Vtable indices (verified via IDA)
@@ -45,7 +46,7 @@ static const int VT_GETPARENT = 17;
 static const int VT_GETPOS    = 22;
 static const int VT_GETCOUNT  = 3;   // IContainerUI vtable
 static const int VT_GETITEMAT = 0;   // IContainerUI vtable
-static const int OFF_ICONTAINER_VT = 0x418; // 1048, verified in CVerticalLayoutUI/CHorizontalLayoutUI/CTabLayoutUI constructors
+// IContainerUI subobject offset handled by GetInterface("IContainer") — no hardcoded offset needed
 
 // ==========================================
 // Helper Functions — vtable calls with SEH
@@ -124,28 +125,33 @@ void* DuiLib_GetControlParent(void* pControl) {
     }
 }
 
-static bool IsContainerUI(void* pControl) {
-    // All IContainerUI implementors have these keywords in class name:
-    // Layout, Container, List, Combo, Header, Menu, Tree, RichEdit
-    const wchar_t* cls = DuiLib_GetControlClass(pControl);
-    return wcsstr(cls, L"Layout") || wcsstr(cls, L"Container") ||
-           wcsstr(cls, L"List")   || wcsstr(cls, L"Combo")    ||
-           wcsstr(cls, L"Header") || wcsstr(cls, L"Menu")     ||
-           wcsstr(cls, L"Tree")   || wcsstr(cls, L"RichEdit");
+// Call GetInterface("IContainer") via vtable[8].
+// Returns IContainerUI subobject pointer (pControl + 0x418) if container, else NULL.
+static void* GetIContainerUI(void* pControl) {
+    if (!pControl) return nullptr;
+    __try {
+        void** vt = *(void***)pControl;
+        if (!vt) return nullptr;
+        typedef void* (__thiscall* FN)(void*, const wchar_t*);
+        FN pfn = (FN)vt[VT_GETINTERFACE]; // GetInterface
+        if (!pfn) return nullptr;
+        return pfn(pControl, L"IContainer");
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        OutputDebugStringA("[Acc] GetIContainerUI SEH\n");
+        return nullptr;
+    }
 }
 
 int DuiLib_GetContainerCount(void* pControl) {
-    if (!pControl || !IsContainerUI(pControl)) return 0;
+    void* icaThis = GetIContainerUI(pControl);
+    if (!icaThis) return 0;
     __try {
-        // IContainerUI subobject starts at offset 0x418 in the full object.
-        // IContainerUI functions expect 'this' = subobject pointer.
-        void* icaThis = (char*)pControl + OFF_ICONTAINER_VT;
         void** icaVt = *(void***)icaThis;
         typedef int (__thiscall* FN)(void*);
         FN pfn = (FN)icaVt[VT_GETCOUNT];
         char buf[256];
-        sprintf_s(buf, "[Acc] GetContainerCount: ctrl=%p icaThis=%p icaVt=%p pfn=%p\n",
-            pControl, icaThis, icaVt, pfn);
+        sprintf_s(buf, "[Acc] GetContainerCount: ctrl=%p icaThis=%p pfn=%p\n",
+            pControl, icaThis, pfn);
         OutputDebugStringA(buf);
         if (!pfn) return 0;
         int count = pfn(icaThis);
@@ -159,9 +165,9 @@ int DuiLib_GetContainerCount(void* pControl) {
 }
 
 void* DuiLib_GetContainerItemAt(void* pControl, int index) {
-    if (!pControl || index < 0 || !IsContainerUI(pControl)) return nullptr;
+    void* icaThis = GetIContainerUI(pControl);
+    if (!icaThis || index < 0) return nullptr;
     __try {
-        void* icaThis = (char*)pControl + OFF_ICONTAINER_VT;
         void** icaVt = *(void***)icaThis;
         typedef void* (__thiscall* FN)(void*, int);
         FN pfn = (FN)icaVt[VT_GETITEMAT];
