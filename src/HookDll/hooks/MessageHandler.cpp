@@ -31,7 +31,7 @@ BOOL CPaintManagerUI_Hook::DetouredMessageHandler(UINT msg, UINT wParam, INT lPa
                 IDispatch* pRootAccessible = GetOrCreateAccessibleWrapper(hwnd, this, pRootControl, nullptr);
                 if (pRootAccessible) {
                     LRESULT lres = LresultFromObject(IID_IAccessible, wParam, pRootAccessible);
-                    pRootAccessible->Release();
+                    pRootAccessible->Release(); // release caller's ref (cache still holds its own)
                     *pResult = lres;
                     OutputDebugStringA("[HookDll] WM_GETOBJECT handled OK\n");
                     return TRUE;
