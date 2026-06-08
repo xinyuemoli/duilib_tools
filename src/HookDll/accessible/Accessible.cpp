@@ -19,6 +19,11 @@ std::map<void*, MyAccessibleImpl*> g_accessibleMap;
 CRITICAL_SECTION g_csAccessibleMap;
 BOOL g_bAccessibleInitialized = FALSE;
 
+// Dynamic cache cleanup
+static HANDLE       g_hCleanupThread = NULL;
+static volatile BOOL g_bCleanupRunning = FALSE;
+static const size_t ACCESSIBLE_CACHE_CLEANUP_THRESHOLD = 100;
+
 FN_GetRoot        g_pfnGetRoot        = nullptr;
 FN_GetPaintWindow g_pfnGetPaintWindow = nullptr;
 
@@ -423,6 +428,9 @@ public:
     STDMETHODIMP put_accValue(VARIANT, BSTR) { return DISP_E_MEMBERNOTFOUND; }
 };
 
+// Forward declaration for threshold-triggered cleanup
+void CleanupStaleAccessibleCache();
+
 // ==========================================
 // Wrapper Factory
 // ==========================================
@@ -442,13 +450,19 @@ IDispatch* GetOrCreateAccessibleWrapper(HWND hwnd, void* pPM, void* pControl, vo
     MyAccessibleImpl* pNewAcc = new MyAccessibleImpl(hwnd, pPM, pControl, pParentControl);
     g_accessibleMap[pControl] = pNewAcc;
     pNewAcc->AddRef();
+    size_t currentSize = g_accessibleMap.size();
     const wchar_t* cls = DuiLib_GetControlClass(pControl);
     char buf[256];
-    sprintf_s(buf, "[Acc] CreateWrapper: ctrl=%p class=%ws cache=%d\n",
-        pControl, cls, (int)g_accessibleMap.size());
+    sprintf_s(buf, "[Acc] CreateWrapper: ctrl=%p class=%ws cache=%zu\n",
+        pControl, cls, currentSize);
     OutputDebugStringA(buf);
 
     LeaveCriticalSection(&g_csAccessibleMap);
+
+    // Threshold-triggered cleanup to prevent unbounded growth
+    if (currentSize >= ACCESSIBLE_CACHE_CLEANUP_THRESHOLD) {
+        CleanupStaleAccessibleCache();
+    }
 
     return static_cast<IDispatch*>(pNewAcc);
 }
@@ -461,6 +475,62 @@ void ClearAccessibleCache(void* pControl) {
         g_accessibleMap.erase(it);
     }
     LeaveCriticalSection(&g_csAccessibleMap);
+}
+
+// ==========================================
+// Dynamic Cache Cleanup
+// ==========================================
+
+// Verify whether a control object is still alive by attempting a safe
+// vtable call through SEH. The vtable indices were verified via IDA Pro.
+static BOOL IsControlAlive(void* pControl) {
+    if (!pControl) return FALSE;
+    __try {
+        void** vt = *(void***)pControl;
+        if (!vt) return FALSE;
+        // Attempt to call GetClass (vtable[VT_GETCLASS]) — if the object
+        // has been destroyed this will trigger an access violation that
+        // our SEH handler catches.
+        typedef const wchar_t* (__thiscall* FN_GetClass)(void*);
+        FN_GetClass pfn = (FN_GetClass)vt[VT_GETCLASS];
+        if (!pfn) return FALSE;
+        pfn(pControl);
+        return TRUE;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return FALSE;
+    }
+}
+
+void CleanupStaleAccessibleCache() {
+    EnterCriticalSection(&g_csAccessibleMap);
+    size_t removedCount = 0;
+    auto it = g_accessibleMap.begin();
+    while (it != g_accessibleMap.end()) {
+        if (!IsControlAlive(it->first)) {
+            it->second->Release();
+            it = g_accessibleMap.erase(it);
+            ++removedCount;
+        } else {
+            ++it;
+        }
+    }
+    if (removedCount > 0) {
+        char buf[256];
+        sprintf_s(buf, "[Acc] CleanupStaleAccessibleCache: removed=%zu remaining=%zu\n",
+            removedCount, g_accessibleMap.size());
+        OutputDebugStringA(buf);
+    }
+    LeaveCriticalSection(&g_csAccessibleMap);
+}
+
+static DWORD WINAPI AccessibleCacheCleanupThread(LPVOID /*lpParam*/) {
+    while (g_bCleanupRunning) {
+        Sleep(3000); // scan every 3 seconds
+        if (g_bCleanupRunning) {
+            CleanupStaleAccessibleCache();
+        }
+    }
+    return 0;
 }
 
 // ==========================================
@@ -477,5 +547,40 @@ void InitAccessibleModule() {
     g_pfnDuiStringGetData = (FN_DuiStringGetData) FindDuiLibExport("?GetData@CDuiString@DuiLib@@QBEPB_WXZ");
 
     g_bAccessibleInitialized = TRUE;
+
+    // Start background cleanup thread
+    if (!g_hCleanupThread) {
+        g_bCleanupRunning = TRUE;
+        g_hCleanupThread = CreateThread(NULL, 0, AccessibleCacheCleanupThread, NULL, 0, NULL);
+        if (g_hCleanupThread) {
+            OutputDebugStringA("[Accessible] Cache cleanup thread started\n");
+        }
+    }
+
     OutputDebugStringA("[Accessible] Module initialized (vtable mode)\n");
+}
+
+void ShutdownAccessibleModule() {
+    // Signal and wait for the cleanup thread to finish
+    g_bCleanupRunning = FALSE;
+    if (g_hCleanupThread) {
+        WaitForSingleObject(g_hCleanupThread, 5000);
+        CloseHandle(g_hCleanupThread);
+        g_hCleanupThread = NULL;
+        OutputDebugStringA("[Accessible] Cache cleanup thread stopped\n");
+    }
+
+    // Release any remaining accessible wrappers
+    EnterCriticalSection(&g_csAccessibleMap);
+    for (auto& pair : g_accessibleMap) {
+        if (pair.second) {
+            pair.second->Release();
+        }
+    }
+    g_accessibleMap.clear();
+    LeaveCriticalSection(&g_csAccessibleMap);
+
+    DeleteCriticalSection(&g_csAccessibleMap);
+    g_bAccessibleInitialized = FALSE;
+    OutputDebugStringA("[Accessible] Module shut down\n");
 }

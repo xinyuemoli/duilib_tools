@@ -42,3 +42,6 @@ void ClearAccessibleCache(void* pControl);
 
 // Initialize Accessible module
 void InitAccessibleModule();
+
+// Shutdown Accessible module (stops cleanup thread and releases cache)
+void ShutdownAccessibleModule();

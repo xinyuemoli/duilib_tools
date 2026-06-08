@@ -1,5 +1,6 @@
 #include <windows.h>
 #include "hooks/MessageHandler.h"
+#include "accessible/Accessible.h"
 
 DWORD WINAPI InitHookThread(LPVOID) {
     OutputDebugStringA("[HookDll] InitHookThread\n");
@@ -22,6 +23,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved) {
     else if (fdwReason == DLL_PROCESS_DETACH) {
         if (lpReserved == NULL) {
             UninstallMessageHandlerHook();
+            ShutdownAccessibleModule();
         }
     }
     return TRUE;
